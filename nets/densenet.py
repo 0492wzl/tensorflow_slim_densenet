@@ -29,6 +29,10 @@ def block(net, layers, growth, scope='block'):
         net = tf.concat(axis=3, values=[net, tmp])
     return net
 
+def transation(net,num_outputs,scope="transition"):
+    net = bn_act_conv_drp(net,num_outputs,[1,1],scope=scope+"_conv1x1")
+    net = slim.avg.pool2d(net,[2.2],stride=2,scope=scope+"_avgpool")
+    return net
 
 def densenet(images, num_classes=1001, is_training=False,
              dropout_keep_prob=0.8,
@@ -49,9 +53,10 @@ def densenet(images, num_classes=1001, is_training=False,
       end_points: a dictionary from components of the network to the corresponding
         activation.
     """
-    growth = 24
+    growth_rate = 24
     compression_rate = 0.5
 
+    #reduce the layer of network by compression_rate, use by transation layer
     def reduce_dim(input_feature):
         return int(int(input_feature.shape[-1]) * compression_rate)
 
@@ -59,11 +64,31 @@ def densenet(images, num_classes=1001, is_training=False,
 
     with tf.variable_scope(scope, 'DenseNet', [images, num_classes]):
         with slim.arg_scope(bn_drp_scope(is_training=is_training,
-                                         keep_prob=dropout_keep_prob)) as ssc:
-            pass
-            ##########################
-            # Put your code here.
-            ##########################
+                                             keep_prob=dropout_keep_prob)) as ssc:
+            # conv 1s layer
+            net = slim.conv2d(images,2*growth_rate,[7,7],stride=2,scope=scope+"_conv1")
+            net = slim.max_pool2d(net,[3,3],stride=2,padding="SAME", scope=scope+"_maxpool1")
+            # blocks
+            net = block(net,6,2*growth_rate,"block1")
+            net = transation(net,reduce_dim(net),scope=scope+"_trasation1")
+            net = block(net,12,growth_rate,"block2")
+            net = transation(net,reduce_dim(net),scope=scope+"_trasation2")
+            net = block(net,24,growth_rate,"block3")
+            net = transation(net,reduce_dim(net),scope=scope+"_trasation3")
+            net = block(net,16,growth_rate,"block4")
+            
+            # global average pooling
+            net = slim.batch_norm(net,scope="globalBN")
+            net = tf.nn.relu(net)
+            net = tf.reduce_mean(net,[1,2],name="globalPool",keep_doms=True)
+            
+            biases_initializer = tf.constant_initializer(0.1)
+            net = slim.conv2d(net,num_classes,[1,1],biases_initializer=biases_initializer,scope="logits")
+            
+            logits = tf.squeeze(net, [1, 2], name='SpatialSqueeze')
+            
+            end_points['Logits'] = logits
+            end_points['predictions'] = slim.softmax(logits, scope='predictions')
 
     return logits, end_points
 
@@ -71,11 +96,11 @@ def densenet(images, num_classes=1001, is_training=False,
 def bn_drp_scope(is_training=True, keep_prob=0.8):
     keep_prob = keep_prob if is_training else 1
     with slim.arg_scope(
-        [slim.batch_norm],
+            [slim.batch_norm],
             scale=True, is_training=is_training, updates_collections=None):
         with slim.arg_scope(
             [slim.dropout],
-                is_training=is_training, keep_prob=keep_prob) as bsc:
+           is_training=is_training, keep_prob=keep_prob) as bsc:
             return bsc
 
 
